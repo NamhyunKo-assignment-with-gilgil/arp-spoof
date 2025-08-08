@@ -23,10 +23,16 @@ void usage() {
 
 void send_arp_preparing(
     ARP_PACKET* packet,
-	char* src_mac, char* dst_mac,
+	const char* src_mac, const char* dst_mac,
 	uint8_t oper,
 	const char* sender_ip, const char* target_ip,
 	const char* sender_mac, const char* target_mac
+);
+
+void get_target_mac_address(
+    pcap_t* pcap_,
+    const char* target_ip, char* target_mac,
+    const char* my_ip, const char* my_mac
 );
 
 void receive_arp(int c, const char* sender_ip);
@@ -56,20 +62,10 @@ int main(int argc, char* argv[]) {
 	while (1){
 		for(int i = 2; i < argc; i += 2) {
             printf("----------");
-			/* who has <target_ip>? 요청 */
-			printf("\nwho has <target_ip>? 요청\n");
-			ARP_PACKET* tip_req_packet = new ARP_PACKET();
-            send_arp_preparing(
-                tip_req_packet,
-				my_mac, "ff:ff:ff:ff:ff:ff",
-				0x0001,
-				my_ip, argv[i],
-				my_mac, "00:00:00:00:00:00"
-            ); // ARP request operation
-			if (pcap_sendpacket(pcap, reinterpret_cast<const u_char*>(tip_req_packet), sizeof(ARP_PACKET)) != 0) {
-				fprintf(stderr, "send packet error: %s\n", pcap_geterr(pcap));
-				return -1;
-			}
+            char target_mac[18];
+            if(get_target_mac_address(pcap, argv[i], target_mac, my_ip, my_mac) != 0) {
+                printf("Failed to get target MAC address\n");
+            }
 
 			/* <target_ip> is <victim_mac> 응답 */
 			printf("\n<target_ip> is <victim_mac> 응답\n");
@@ -124,7 +120,7 @@ int main(int argc, char* argv[]) {
 
 void send_arp_preparing(
     ARP_PACKET* packet,
-	char* src_mac, char* dst_mac,
+	const char* src_mac, const char* dst_mac,
 	uint8_t oper,
 	const char* sender_ip, const char* target_ip,
 	const char* sender_mac, const char* target_mac
@@ -149,6 +145,55 @@ void send_arp_preparing(
 
 	printf("Sender IP: %s, Target IP: %s\n", sender_ip, target_ip);
 	printf("Sender MAC: %s, Target MAC: %s\n", sender_mac, target_mac);
+}
+
+void get_target_mac_address(
+    pcap_t* pcap_,
+    const char* target_ip, char* target_mac,
+    const char* my_ip, const char* my_mac
+) {
+    /* who has <target_ip>? 요청 */
+    printf("\nwho has <target_ip>? 요청\n");
+    ARP_PACKET* tip_req_packet = new ARP_PACKET();
+    send_arp_preparing(
+        tip_req_packet,
+        my_mac, "ff:ff:ff:ff:ff:ff",
+        0x0001,
+        my_ip, target_ip,
+        my_mac, "00:00:00:00:00:00"
+    ); // ARP request operation
+    
+    if (pcap_sendpacket(pcap_, reinterpret_cast<const u_char*>(tip_req_packet), sizeof(ARP_PACKET)) != 0) {
+        fprintf(stderr, "send packet error: %s\n", pcap_geterr(pcap_));
+        printf("Failed to send ARP request\n");
+        return;
+    }
+
+    printf("\n<target_ip> is <victim_mac> 응답\n");
+    ARP_PACKET* tip_res_packet = NULL;
+    char sender_ip[16];
+    while(1) {
+        struct pcap_pkthdr* header;
+        const u_char* packet;
+        int res = pcap_next_ex(pcap_, &header, &packet);
+        if (res == 0) continue;
+        if (res == PCAP_ERROR || res == PCAP_ERROR_BREAK) {
+            printf("pcap_next_ex return %d(%s)\n", res, pcap_geterr(pcap_));
+            break;
+        }
+
+        tip_res_packet = (ARP_PACKET*) packet; /* pointer casting */
+
+        byteip_to_stringip(&tip_res_packet->arp_h.sender_ip_address, sender_ip);
+        tip_res_packet = reinterpret_cast<ARP_PACKET*>(const_cast<u_char*>(packet));
+        if (ntohs(tip_res_packet->eth_h.ether_type) == 0x0806 && ntohs(tip_res_packet->arp_h.operation) == 2 && strncmp(sender_ip, target_ip, 16) == 0) {
+            printf("Received ARP reply from %s\n", target_ip);
+            break;
+        }
+    }
+    bytemac_to_stringmac(tip_res_packet->arp_h.sender_mac_address, target_mac);
+
+    return;
 }
 
 void receive_arp(int c, char* sender_ip){
