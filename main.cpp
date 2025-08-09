@@ -32,7 +32,7 @@ void send_arp_preparing(
 	const char* sender_mac, const char* target_mac
 );
 
-void get_sender_mac_address(
+void get_mac_address(
     pcap_t* pcap_,
     const char* sender_ip, char* sender_mac,
     const char* my_ip, const char* my_mac
@@ -71,10 +71,11 @@ int main(int argc, char* argv[]) {
 	getMyIpAddress(argv[1], my_ip);
 
 	while (1){
-        char sender_mac[18];
+        char sender_mac[18], target_mac[18];
 		for(int i = 2; i < argc; i += 2) {
             printf("----------\n");
-            get_sender_mac_address(pcap, argv[i], sender_mac, my_ip, my_mac);
+            get_mac_address(pcap, argv[i], sender_mac, my_ip, my_mac);
+            get_mac_address(pcap, argv[i + 1], target_mac, my_ip, my_mac);
 
 			/* 위조 패킷 보내기 */
 			arp_infection(pcap, argv[i], sender_mac, argv[i + 1], my_mac, my_ip);
@@ -91,7 +92,6 @@ int main(int argc, char* argv[]) {
                 printf("pcap_next_ex return %d(%s)\n", res, pcap_geterr(pcap));
                 break;
             }
-            // printf("%u bytes captured\n", header->caplen);
             ETHERNET_HDR *eth = (ETHERNET_HDR *)packet;
 
             /* 이더넷 헤더와 ip 헤더 사이에 바이트 패딩이 있을 경우 바이트 패딩 무시 후 구조체 포인터 캐스팅 */
@@ -103,23 +103,18 @@ int main(int argc, char* argv[]) {
             bytemac_to_stringmac(eth->ether_dhost, dst_mac);
             byteip_to_stringip(&(ipv4->ip_src), src_ip);
             byteip_to_stringip(&(ipv4->ip_dst), dst_ip);
-            // printf("%u bytes captured\n", header->caplen);
-            // print_ethernet(eth);
-            // print_ipv4(ipv4);
-            // printf("%s %s\n",sender_mac, my_mac);
 
 
             if(strncmp(src_mac, sender_mac, 18) == 0 && strncmp(dst_mac, my_mac, 18) == 0) {
                 printf("-------------------\n");
                 printf("\nReceived reply from victim\n(from %s to %s)\n", src_ip, dst_ip);
-                // printf("src mac %s dst mac %s\n",src_mac, dst_mac);
-                // printf("src ip %s dst ip %s\n", src_ip, dst_ip);
+
                 /* 패킷을 target으로 전송 */
                 ETHERNET_HDR *infection_eth = new ETHERNET_HDR();
                 u_char* infection_packet = new u_char[header->caplen];
 
-                stringmac_to_bytemac("DE:45:B8:D1:9B:64", infection_eth->ether_dhost);
-                memcpy(infection_eth->ether_shost, eth->ether_shost, 6);
+                stringmac_to_bytemac(target_mac, infection_eth->ether_dhost);
+                stringmac_to_bytemac(my_mac, infection_eth->ether_shost);
                 infection_eth->ether_type = eth->ether_type;
                 print_ethernet(infection_eth);
 
@@ -168,7 +163,7 @@ void send_arp_preparing(
 }
 
 /* sender mac 주소 얻는 함수 */
-void get_sender_mac_address(
+void get_mac_address(
     pcap_t* pcap_,
     const char* sender_ip, char* sender_mac,
     const char* my_ip, const char* my_mac
