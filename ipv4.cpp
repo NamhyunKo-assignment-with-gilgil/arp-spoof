@@ -22,3 +22,19 @@ void byteip_to_stringip(uint32_t* byte_ip, char* str_ip){
         (*byte_ip >> 24) & 0xFF
     );
 }
+
+void print_ipv4(IPV4_HDR* ip){
+    printf("[Ipv4]\n");
+
+    printf("DST IP : ");
+    char dst_ip[16];
+    byteip_to_stringip(&(ip->ip_dst), dst_ip);
+    printf("%s\n", dst_ip);
+
+    printf("SRC IP : ");
+    char src_ip[16];
+    byteip_to_stringip(&(ip->ip_src), src_ip);
+    printf("%s\n", src_ip);
+
+    printf("Protocol : %02x\n", ip->ip_p);
+}

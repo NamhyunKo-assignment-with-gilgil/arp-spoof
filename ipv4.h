@@ -16,3 +16,4 @@ typedef struct my_ipv4_hdr {	/* ipv4_hdr */
 
 void stringip_to_byteip(const char* str_ip, uint32_t* byte_ip);
 void byteip_to_stringip(uint32_t* byte_ip, char* str_ip);
+void print_ipv4(IPV4_HDR* ip);
