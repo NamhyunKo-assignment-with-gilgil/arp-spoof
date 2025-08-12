@@ -142,9 +142,9 @@ int main(int argc, char* argv[]) {
             if(ip_mac.count(dst_ip)||ip_mac.count(src_ip)) {
                 printf("-------------------\n");
                 printf("\nReceived reply from victim\n(from %s to %s)\n", src_ip, dst_ip);
-                if (ip_mac.count(src_ip))
+                if (ip_mac.count(src_ip))   /* src_ip가 arp 테이블에 있는 경우(gateway로 보내기 sender-target, ip_mac 이용) */
                     send_relay_packet(pcap, packet, header, eth, ip_mac[sender_target[src_ip]].c_str(), my_mac);
-                else
+                else /* dst_ip가 arp 테이블에 있는 경우(victim으로 보내기 - ip_mac 이용) */
                     send_relay_packet(pcap, packet, header, eth, ip_mac[dst_ip].c_str(), my_mac);
             }
         }
