@@ -48,8 +48,6 @@ void arp_infection(
     const char* my_ip
 );
 
-void receive_arp(int c, const char* sender_ip);
-
 void send_relay_packet(
     pcap_t* pcap, const u_char* packet, struct pcap_pkthdr* header,
     ETHERNET_HDR* eth, const char* target_mac, const char* my_mac
@@ -261,10 +259,6 @@ void arp_infection(
     }
     printf("Sent ARP packet from %s to %s\n\n\n", my_ip, sender_ip);
     delete infection_packet;
-}
-
-void receive_arp(int c, char* sender_ip) {
-	ARP_PACKET *packet = new ARP_PACKET;
 }
 
 void send_relay_packet(
